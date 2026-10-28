@@ -116,6 +116,7 @@ class ControlPanel(ctk.CTkFrame):
         )
         self._reg(self.multi_curve_btn, 'btn.multi_curve_off')
 
+
         # ===== Сгладить (на всю ширину) =====
         self.btn_smooth = ctk.CTkButton(
             self, text=t('btn.smooth'), height=BH, corner_radius=10,
@@ -279,6 +280,16 @@ class ControlPanel(ctk.CTkFrame):
         self.radius_entry.insert(0, '10')
         self.radius_entry.pack(side='right')
 
+        # Кнопка "Пунктир" (появляется только в супермоде)
+        self.btn_dashed = ctk.CTkButton(
+            self, text="Пунктир", height=32, corner_radius=8,
+            fg_color='#F59E0B', hover_color='#D97706',
+            font=FONTS['small_bold'],
+            command=lambda: self.on_action('mark_dashed'),
+        )
+        # По умолчанию скрыта
+        self.btn_dashed.pack_forget()
+
         # ===== РАСПОРКА (занимает всё свободное место, прижимая низ) =====
         spacer = ctk.CTkFrame(self, fg_color='transparent')
         spacer.pack(fill='both', expand=True)
@@ -316,8 +327,8 @@ class ControlPanel(ctk.CTkFrame):
         # ===== СТАТУС (привязан к низу, над кнопками) =====
         # Высота нижних кнопок = 34px + отступ 10px = 44px.
         # Ставим статус-бар на y=-54 (44 + 10 отступ).
-        self.status_label.place(relx=0, rely=1.0, x=PAD, y=-54, anchor='sw')
-        self.info_label.place(relx=0, rely=1.0, x=PAD, y=-74, anchor='sw')
+        self.status_label.place(relx=0, rely=1.0, x=PAD, y=-80, anchor='sw')
+        self.info_label.place(relx=0, rely=1.0, x=PAD, y=-100, anchor='sw')
 
         self.lang_ru = ctk.CTkButton(
             bottom, text='RU', width=44, height=30, corner_radius=6,
@@ -361,6 +372,13 @@ class ControlPanel(ctk.CTkFrame):
         )
         self.help_btn.pack(side='right', fill='x', expand=True, padx=(8, 0))
         self._reg(self.help_btn, 'btn.help')
+
+    def set_supermode(self, enabled):
+        """Показывает/скрывает кнопку 'Пунктир' в Супермоде."""
+        if enabled:
+            self.btn_dashed.pack(fill='x', padx=16, pady=(0, 6), before=self.btn_clear)
+        else:
+            self.btn_dashed.pack_forget()
 
     def _toggle_multi_curve_btn(self):
         self.multi_curve_var.set(not self.multi_curve_var.get())

@@ -7,6 +7,8 @@ import customtkinter as ctk
 from tkinter import filedialog, messagebox, simpledialog
 from pathlib import Path
 import numpy as np
+import cv2
+import threading
 
 from config.settings import COLORS, FONTS, WINDOW, APP_NAME, APP_VERSION, CURVE_COLORS
 from ui.canvas_widget import GraphCanvas
@@ -28,6 +30,7 @@ from core.i18n import i18n, t
 from utils.image_utils import cv2_to_pil
 from utils.export import export_1d_data, export_2d_data
 from core.theme_manager import theme_manager
+from core.predictive_detector import PredictiveDetector
 
 
 class AppWindow(ctk.CTk):
@@ -48,6 +51,8 @@ class AppWindow(ctk.CTk):
 
         # Режим работы
         self.mode = 'normal'
+        self.supermode = False
+        self.backup_before_super = None
 
         # Точки
         self.data_points_1d = []
@@ -73,19 +78,14 @@ class AppWindow(ctk.CTk):
         self._update_legend()
 
         # Toast поверх canvas
-        self.toast = Toast(self)  # ← от главного окна
+        self.toast = Toast(self)
+
+        self.dashed_mask = None
+        self._dashed_points = []
 
         # Подписка на смену языка
         i18n.on_change(self._on_language_changed)
         theme_manager.on_change(self._on_theme_changed)
-
-    # Устанавливаем тему из настроек (по умолчанию — light)
-    import customtkinter as ctk
-    ctk.set_appearance_mode(theme_manager.current)
-
-    # ============================================================
-    # UI
-    # ============================================================
 
     def _build_ui(self):
         container = ctk.CTkFrame(self, fg_color='transparent', corner_radius=0)
@@ -198,6 +198,20 @@ class AppWindow(ctk.CTk):
         )
         self.mode_btn_poly.pack(side='left', padx=3, pady=3)
 
+        self.mode_btn_super = ctk.CTkButton(
+            mode_switch_frame,
+            text="Супермод",  # или t('mode.super')
+            width=140,
+            height=38,
+            corner_radius=8,
+            fg_color='transparent',
+            hover_color=COLORS['border'],
+            text_color=COLORS['text_secondary'],
+            font=FONTS['small_bold'],
+            command=lambda: self._set_mode('super'),
+        )
+        self.mode_btn_super.pack(side='left', padx=3, pady=3)
+
         self.canvas_info = ctk.CTkLabel(
             canvas_header, text=t('panel.no_image'),
             font=FONTS['small'], text_color=COLORS['text_muted']
@@ -218,10 +232,12 @@ class AppWindow(ctk.CTk):
         )
         self.canvas_widget.pack(fill='both', expand=True, padx=10, pady=10)
         self.canvas_widget.set_calib_marks_callback(self._draw_calibration)
+        self.canvas_widget.canvas.bind('<Control-z>', lambda e: self._undo())
+        self.canvas_widget.canvas.bind('<Control-Z>', lambda e: self._undo())
 
 
     def _bind_hotkeys(self):
-        self.bind_all('<F1>', lambda e: self._show_help())
+        self.bind_all('<F12>', lambda e: self._show_help())
         self.bind_all('<Control-o>', lambda e: self._open_image())
         self.bind_all('<Control-s>', lambda e: self._save_data())
         self.bind_all('<Control-0>', lambda e: self._reset_zoom())
@@ -230,19 +246,14 @@ class AppWindow(ctk.CTk):
         self.bind_all('<KeyRelease>', self._on_key_release)
 
     def _on_theme_changed(self, theme_name):
-        """Обновляет UI при смене темы."""
-        # Меняем режим CustomTkinter
         import customtkinter as ctk
         ctk.set_appearance_mode(theme_name)
-
-        # Обновляем иконку на кнопке темы
         try:
             icon = '☀️' if theme_name == 'dark' else '🌙'
             self.panel.theme_btn.configure(text=icon)
         except Exception:
             pass
 
-        # Предлагаем перезапуск
         from tkinter import messagebox
         from core.i18n import t
         answer = messagebox.askyesno(
@@ -253,7 +264,6 @@ class AppWindow(ctk.CTk):
             self._restart_app()
 
     def _restart_app(self):
-        """Перезапускает приложение."""
         import sys
         import os
         import subprocess
@@ -288,12 +298,7 @@ class AppWindow(ctk.CTk):
         if event.keysym in ('Control_L', 'Control_R'):
             self.canvas_widget._set_ctrl(False)
 
-    # ============================================================
-    # СМЕНА ЯЗЫКА
-    # ============================================================
-
     def _on_language_changed(self, lang):
-        """Обновляет интерфейс при смене языка."""
         try:
             self.title(f'{t("app.title")} v{APP_VERSION}')
             self.legend_title.configure(text=t('panel.legend'))
@@ -301,6 +306,7 @@ class AppWindow(ctk.CTk):
             self.mode_btn_1d.configure(text=t('mode.1d'))
             self.mode_btn_2d.configure(text=t('mode.2d'))
             self.mode_btn_poly.configure(text=t('mode.poly'))
+            self.mode_btn_super.configure(text=t('mode.super'))
             if not self.image_loader.is_loaded():
                 self.canvas_info.configure(text=t('panel.no_image'))
             self._update_legend()
@@ -309,10 +315,6 @@ class AppWindow(ctk.CTk):
 
     def _open_help(self):
         HelpDialog(self)
-
-    # ============================================================
-    # ОБРАБОТКА ДЕЙСТВИЙ
-    # ============================================================
 
     def _handle_action(self, action):
         handlers = {
@@ -333,13 +335,17 @@ class AppWindow(ctk.CTk):
             'show_data': self._show_data,
             'clear_all': self._clear_all,
             'save_data': self._save_data,
-            'smooth_data': self._open_smoothing_dialog,  # <--- ДОБАВИТЬ
-            'clear_all': self._clear_all,
-            'save_data': self._save_data,
+            'smooth_data': self._open_smoothing_dialog,
+            'mark_dashed': self._start_mark_dashed,
         }
 
         if action in handlers:
             handlers[action]()
+
+    def _start_mark_dashed(self):
+        self.mode = 'mark_dashed'
+        self.canvas_widget.canvas.configure(cursor='pencil')
+        self.panel.set_status("Зажмите мышь и обведите пунктир (он будет проигнорирован).")
 
     def _open_image(self):
         path = filedialog.askopenfilename(
@@ -364,6 +370,7 @@ class AppWindow(ctk.CTk):
             self.data_points_1d = []
             self.data_points_2d = {}
             self.undo_manager.clear()
+            self.super_found_curves = None
 
             self._update_legend()
 
@@ -388,29 +395,38 @@ class AppWindow(ctk.CTk):
             '1d': (self.mode_btn_1d, COLORS['primary']),
             '2d': (self.mode_btn_2d, COLORS['accent']),
             'poly': (self.mode_btn_poly, COLORS['success']),
+            'super': (self.mode_btn_super, COLORS['warning']),  # <--- ДОБАВИТЬ
         }
 
         for key, (btn, color) in modes.items():
             if key == mode:
-                btn.configure(
-                    fg_color=color,
-                    text_color=COLORS['text_on_primary']
-                )
+                btn.configure(fg_color=color, text_color=COLORS['text_on_primary'])
             else:
-                btn.configure(
-                    fg_color='transparent',
-                    text_color=COLORS['text_secondary']
-                )
+                btn.configure(fg_color='transparent', text_color=COLORS['text_secondary'])
 
         mode_text = {
             '1d': t('mode.1d_short'),
             '2d': t('mode.2d_short'),
             'poly': t('mode.poly_short'),
+            'super': t('mode.super_short'),
         }.get(mode, mode)
 
         self.panel.set_status(t('status.mode', mode=mode_text))
         self._redraw_points()
         self._update_legend()
+
+        # Если переключились на Супермод — сбрасываем старые данные
+        if mode == 'super':
+            self.supermode = True
+            self.data_points_1d = []
+            self.data_points_2d = {}
+            self.super_found_curves = None  # <--- СБРОС
+            self.super_curve_names = {}
+            self._draw_existing_points()
+            self._update_legend()
+            self.panel.set_status(t('super.click_graph'))
+        else:
+            self.supermode = False
 
     def _toggle_multi_curve(self):
         self.multi_curve_mode = self.panel.multi_curve_var.get()
@@ -419,15 +435,12 @@ class AppWindow(ctk.CTk):
         else:
             self.panel.set_status(t('status.multi_curve_off'))
 
-    # ============================================================
-    # ЛЕГЕНДА
-    # ============================================================
-
     def _update_legend(self):
         for widget in self.legend_scroll.winfo_children():
             widget.destroy()
 
-        if self.graph_mode != '2d' or not self.data_points_2d:
+        # Показываем легенду для 2D и Супермода
+        if self.graph_mode not in ('2d', 'super') or not self.data_points_2d:
             self.legend_panel.pack_forget()
             return
 
@@ -447,6 +460,7 @@ class AppWindow(ctk.CTk):
                 corner_radius=8
             )
             item.pack(fill='x', pady=3, padx=2)
+            item.bind('<Button-1>', lambda e, cn=curve_name: self._highlight_curve(cn))
 
             dot = ctk.CTkFrame(
                 item, width=16, height=16,
@@ -455,47 +469,65 @@ class AppWindow(ctk.CTk):
             )
             dot.pack(side='left', padx=(10, 8), pady=10)
             dot.pack_propagate(False)
+            dot.bind('<Button-1>', lambda e, cn=curve_name: self._highlight_curve(cn))
 
             text_frame = ctk.CTkFrame(item, fg_color='transparent')
             text_frame.pack(side='left', fill='x', expand=True, pady=6)
+            text_frame.bind('<Button-1>', lambda e, cn=curve_name: self._highlight_curve(cn))
 
-            ctk.CTkLabel(
+            label1 = ctk.CTkLabel(
                 text_frame, text=f'X2 = {curve_name}',
                 font=FONTS['small_bold'],
                 text_color=COLORS['text_primary'],
                 anchor='w'
-            ).pack(anchor='w')
+            )
+            label1.pack(anchor='w')
+            label1.bind('<Button-1>', lambda e, cn=curve_name: self._highlight_curve(cn))
 
-            ctk.CTkLabel(
+            label2 = ctk.CTkLabel(
                 text_frame, text=f'{count}',
                 font=FONTS['tiny'],
                 text_color=COLORS['text_secondary'],
                 anchor='w'
-            ).pack(anchor='w')
+            )
+            label2.pack(anchor='w')
+            label2.bind('<Button-1>', lambda e, cn=curve_name: self._highlight_curve(cn))
 
-    # ============================================================
-    # КАЛИБРОВКА
-    # ============================================================
+    def _highlight_curve(self, curve_name):
+        if self.graph_mode not in ('2d', 'super') or curve_name not in self.data_points_2d:
+            return
+
+        self.current_curve = curve_name
+        self.canvas_widget.clear_overlay()
+
+        for cid, points in self.data_points_2d.items():
+            color = CURVE_COLORS[list(self.data_points_2d.keys()).index(cid) % len(CURVE_COLORS)]
+            if cid == curve_name:
+                size = 5
+                outline = 'yellow'
+            else:
+                size = 2
+                outline = 'white'
+
+            for x, y in points:
+                px, py = self.calibrator.val_to_px(x, y)
+                self.canvas_widget.draw_point(px, py, color=color, size=size, outline=outline)
+
+        self._draw_calibration()
+        self.panel.set_status(f"Выбрана кривая X2 = {curve_name}")
 
     def _auto_calibrate(self):
-        """Авто-выравнивание + клик по началу координат + поиск концов осей."""
         if not self.image_loader.is_loaded():
             messagebox.showwarning(t('msg.warning'), t('msg.load_image_first'))
             return
 
-        # ============================================================
-        # ШАГ 1. Выравнивание
-        # ============================================================
         self.panel.set_status(t('status.aligning'))
         if hasattr(self, 'toast'):
             self.toast.show(t('status.aligning'), duration=2, color='info')
         self.update()
 
         old_image = self.image_loader.current.copy()
-        self.undo_manager.push({
-            'type': 'align',
-            'data': old_image,
-        })
+        self.undo_manager.push({'type': 'align', 'data': old_image})
 
         aligned, angle = auto_align(self.image_loader.current)
 
@@ -515,10 +547,6 @@ class AppWindow(ctk.CTk):
         else:
             self.undo_manager.pop()
 
-        # ============================================================
-        # ШАГ 2. Автопоиск начала координат или клик
-        # ============================================================
-        # Сначала пробуем найти оси автоматически
         self.panel.set_status("Поиск начала координат...")
         self.update()
 
@@ -526,13 +554,11 @@ class AppWindow(ctk.CTk):
         origin = detector.find_origin()
 
         if origin is not None:
-            # Нашли автоматически — сразу запускаем обработку
             print(f'[AxisDetector] Автопоиск начала координат: {origin}')
             if hasattr(self, 'toast'):
                 self.toast.show("Начало координат найдено автоматически", duration=3, color='success')
             self._handle_pick_origin(origin[0], origin[1])
         else:
-            # Не нашли — просим кликнуть вручную
             self.mode = 'pick_origin'
             self.canvas_widget.canvas.configure(cursor='tcross')
             self.panel.set_status(t('status.pick_origin'))
@@ -541,12 +567,10 @@ class AppWindow(ctk.CTk):
                 self.toast.show(t('toast.pick_origin'), duration=8, color='warning')
 
     def _handle_pick_origin(self, img_x, img_y):
-        """Обработка клика по началу координат."""
         if hasattr(self, 'toast'):
             self.toast.hide()
 
         detector = AxisDetector(self.image_loader.current)
-
         x_end = detector.find_x_end(img_x, img_y)
         y_end = detector.find_y_end(img_x, img_y)
 
@@ -558,7 +582,6 @@ class AppWindow(ctk.CTk):
 
         origin = (img_x, img_y)
 
-        # Попытка OCR
         ocr_result = None
         if ocr_available():
             try:
@@ -573,7 +596,6 @@ class AppWindow(ctk.CTk):
         self.mode = 'normal'
         self.canvas_widget.canvas.configure(cursor='crosshair')
 
-        # Defaults с OCR
         defaults = dict(self.calibrator.field_values)
         if ocr_result:
             if 'x0' in ocr_result:
@@ -585,12 +607,7 @@ class AppWindow(ctk.CTk):
             if 'y1' in ocr_result:
                 defaults['Y1'] = str(ocr_result['y1'])
 
-        dialog = CalibrationDialog(
-            self,
-            defaults=defaults,
-            title=t('btn.auto_calib')
-        )
-
+        dialog = CalibrationDialog(self, defaults=defaults, title=t('btn.auto_calib'))
         if dialog.result is None:
             self.canvas_widget.clear_overlay()
             self._draw_calibration()
@@ -614,28 +631,18 @@ class AppWindow(ctk.CTk):
 
     def _draw_auto_detection(self, origin, x_end, y_end):
         self.canvas_widget.clear_overlay()
-        self.canvas_widget.draw_point(origin[0], origin[1],
-                                      color='#F59E0B', size=8, shape='cross')
-        self.canvas_widget.draw_point(x_end[0], x_end[1],
-                                      color='#3B82F6', size=8, shape='cross')
-        self.canvas_widget.draw_point(y_end[0], y_end[1],
-                                      color='#10B981', size=8, shape='cross')
-        self.canvas_widget.draw_line(origin[0], origin[1], x_end[0], x_end[1],
-                                     color='#3B82F6', width=2)
-        self.canvas_widget.draw_line(origin[0], origin[1], y_end[0], y_end[1],
-                                     color='#10B981', width=2)
+        self.canvas_widget.draw_point(origin[0], origin[1], color='#F59E0B', size=8, shape='cross')
+        self.canvas_widget.draw_point(x_end[0], x_end[1], color='#3B82F6', size=8, shape='cross')
+        self.canvas_widget.draw_point(y_end[0], y_end[1], color='#10B981', size=8, shape='cross')
+        self.canvas_widget.draw_line(origin[0], origin[1], x_end[0], x_end[1], color='#3B82F6', width=2)
+        self.canvas_widget.draw_line(origin[0], origin[1], y_end[0], y_end[1], color='#10B981', width=2)
 
     def _start_manual_calib(self):
         if not self.image_loader.is_loaded():
             messagebox.showwarning(t('msg.warning'), t('msg.load_image_first'))
             return
 
-        dialog = CalibrationDialog(
-            self,
-            defaults=self.calibrator.field_values,
-            title=t('btn.manual_calib')
-        )
-
+        dialog = CalibrationDialog(self, defaults=self.calibrator.field_values, title=t('btn.manual_calib'))
         if dialog.result is None:
             return
 
@@ -644,10 +651,8 @@ class AppWindow(ctk.CTk):
         self.calibrator.points = {}
         self.calibrator.step = 0
         self.mode = 'calibrating'
-
         self.canvas_widget.clear_overlay()
         self.canvas_widget.canvas.configure(cursor='tcross')
-
         self.panel.set_status(t('status.click_origin'))
         self.panel.set_info(t('status.step_1_3'))
 
@@ -660,11 +665,9 @@ class AppWindow(ctk.CTk):
         if step == 0:
             self.calibrator.points['origin'] = {
                 'pixel': (img_x, img_y),
-                'value': (float(self.calibrator.field_values['X0']),
-                          float(self.calibrator.field_values['Y0'])),
+                'value': (float(self.calibrator.field_values['X0']), float(self.calibrator.field_values['Y0'])),
             }
-            self.canvas_widget.draw_point(img_x, img_y,
-                                          color='#F59E0B', size=10, shape='cross')
+            self.canvas_widget.draw_point(img_x, img_y, color='#F59E0B', size=10, shape='cross')
             self.panel.set_status(t('status.click_x_end'))
             self.panel.set_info(t('status.step_2_3'))
             if hasattr(self, 'toast'):
@@ -673,14 +676,11 @@ class AppWindow(ctk.CTk):
         elif step == 1:
             self.calibrator.points['x_max'] = {
                 'pixel': (img_x, img_y),
-                'value': (float(self.calibrator.field_values['X1']),
-                          float(self.calibrator.field_values['Y0'])),
+                'value': (float(self.calibrator.field_values['X1']), float(self.calibrator.field_values['Y0'])),
             }
-            self.canvas_widget.draw_point(img_x, img_y,
-                                          color='#3B82F6', size=10, shape='cross')
+            self.canvas_widget.draw_point(img_x, img_y, color='#3B82F6', size=10, shape='cross')
             o = self.calibrator.points['origin']['pixel']
-            self.canvas_widget.draw_line(o[0], o[1], img_x, img_y,
-                                         color='#3B82F6', width=2)
+            self.canvas_widget.draw_line(o[0], o[1], img_x, img_y, color='#3B82F6', width=2)
             self.panel.set_status(t('status.click_y_end'))
             self.panel.set_info(t('status.step_3_3'))
             if hasattr(self, 'toast'):
@@ -689,14 +689,11 @@ class AppWindow(ctk.CTk):
         elif step == 2:
             self.calibrator.points['y_max'] = {
                 'pixel': (img_x, img_y),
-                'value': (float(self.calibrator.field_values['X0']),
-                          float(self.calibrator.field_values['Y1'])),
+                'value': (float(self.calibrator.field_values['X0']), float(self.calibrator.field_values['Y1'])),
             }
-            self.canvas_widget.draw_point(img_x, img_y,
-                                          color='#10B981', size=10, shape='cross')
+            self.canvas_widget.draw_point(img_x, img_y, color='#10B981', size=10, shape='cross')
             o = self.calibrator.points['origin']['pixel']
-            self.canvas_widget.draw_line(o[0], o[1], img_x, img_y,
-                                         color='#10B981', width=2)
+            self.canvas_widget.draw_line(o[0], o[1], img_x, img_y, color='#10B981', width=2)
 
             self.calibrator._recalc()
             self._save_calibration()
@@ -723,14 +720,8 @@ class AppWindow(ctk.CTk):
             return
         if not self.calibrator.is_calibrated():
             return
-        calib_file = Path(self.image_loader.path).with_name(
-            Path(self.image_loader.path).stem + '_calib.json'
-        )
+        calib_file = Path(self.image_loader.path).with_name(Path(self.image_loader.path).stem + '_calib.json')
         self.calibrator.save(str(calib_file))
-
-    # ============================================================
-    # ОЦИФРОВКА
-    # ============================================================
 
     def _start_digitize(self):
         if not self.calibrator.is_calibrated():
@@ -740,7 +731,6 @@ class AppWindow(ctk.CTk):
         self.mode = 'digitizing'
         self.temp_points = []
         self.canvas_widget.canvas.configure(cursor='tcross')
-
         self._draw_existing_points()
 
         if self.graph_mode == '1d':
@@ -764,22 +754,15 @@ class AppWindow(ctk.CTk):
             self._digitize_2d_click(img_x, img_y)
 
     def _digitize_1d(self, img_x, img_y):
-        """Оцифровка 1D — водяной поток от точки."""
         if not self.calibrator.is_calibrated():
             self.panel.set_status(t('msg.calib_first'))
             return
 
         detector = CurveDetector(self.image_loader.current, self.calibrator)
-
         step = int(self.panel.step_entry.get() or 8)
         radius = int(self.panel.radius_entry.get() or 10)
 
-        path = detector.water_flow(
-            img_x, img_y,
-            step_pixels=step,
-            search_window=radius,
-        )
-
+        path = detector.water_flow(img_x, img_y, step_pixels=step, search_window=radius)
         if len(path) < 3:
             self.panel.set_status(t('status.curve_not_found'))
             if hasattr(self, 'toast'):
@@ -797,11 +780,7 @@ class AppWindow(ctk.CTk):
                     dedup.append(pt)
             values = dedup
 
-        self.undo_manager.push({
-            'type': '1d_points',
-            'data': list(self.data_points_1d),
-        })
-
+        self.undo_manager.push({'type': '1d_points', 'data': list(self.data_points_1d)})
         self.data_points_1d = values
         self._draw_existing_points()
 
@@ -811,27 +790,19 @@ class AppWindow(ctk.CTk):
         self.panel.set_info(t('status.undo_hint'))
 
         if hasattr(self, 'toast'):
-            self.toast.show(
-                t('toast.digitize_done', n=len(values)),
-                duration=3, color='success'
-            )
+            self.toast.show(t('toast.digitize_done', n=len(values)), duration=3, color='success')
 
     def _digitize_2d_click(self, img_x, img_y):
         self.temp_points.append((img_x, img_y))
         idx = len(self.temp_points)
 
-        if idx == 1:
-            color = '#10B981'
-        else:
-            color = '#F59E0B'
-
+        color = '#10B981' if idx == 1 else '#F59E0B'
         self.canvas_widget.draw_point(img_x, img_y, color=color, size=8, shape='cross')
 
         if idx >= 2:
             p1 = self.temp_points[-2]
             p2 = self.temp_points[-1]
-            self.canvas_widget.draw_line(p1[0], p1[1], p2[0], p2[1],
-                                         color='#3B82F6', width=2, dash=(4, 4))
+            self.canvas_widget.draw_line(p1[0], p1[1], p2[0], p2[1], color='#3B82F6', width=2, dash=(4, 4))
 
         self.panel.set_status(t('status.points_count', n=idx))
 
@@ -873,9 +844,7 @@ class AppWindow(ctk.CTk):
                     self.canvas_widget.canvas.configure(cursor='crosshair')
                     self.mode = 'normal'
                     self._update_legend()
-                    self.panel.set_status(
-                        t('status.curve_points_copied', name=x2_value, n=len(new_vals))
-                    )
+                    self.panel.set_status(t('status.curve_points_copied', name=x2_value, n=len(new_vals)))
                     return
 
         detector = CurveDetector(self.image_loader.current, self.calibrator)
@@ -936,10 +905,7 @@ class AppWindow(ctk.CTk):
         self.panel.set_status(t('status.curve_points', name=x2_value, n=len(values)))
 
         if hasattr(self, 'toast'):
-            self.toast.show(
-                t('toast.digitize_done', n=len(values)),
-                duration=3, color='success'
-            )
+            self.toast.show(t('toast.digitize_done', n=len(values)), duration=3, color='success')
 
     def _find_matching_curve(self, exclude_curve):
         if not self.temp_points:
@@ -979,26 +945,19 @@ class AppWindow(ctk.CTk):
             if self.calibrator.is_calibrated():
                 for x, y in self.data_points_1d:
                     px, py = self.calibrator.val_to_px(x, y)
-                    self.canvas_widget.draw_point(px, py,
-                                                  color='#EF4444', size=3,
-                                                  outline='white')
+                    self.canvas_widget.draw_point(px, py, color='#EF4444', size=3, outline='white')
         else:
+            # Рисуем все кривые из data_points_2d (для 2d и super)
             for idx, (curve_name, points) in enumerate(self.data_points_2d.items()):
                 color = CURVE_COLORS[idx % len(CURVE_COLORS)]
                 for x, y in points:
                     px, py = self.calibrator.val_to_px(x, y)
-                    self.canvas_widget.draw_point(px, py,
-                                                  color=color, size=3,
-                                                  outline='white')
+                    self.canvas_widget.draw_point(px, py, color=color, size=3, outline='white')
 
         self._draw_calibration()
 
     def _redraw_points(self):
         self._draw_existing_points()
-
-    # ============================================================
-    # ИНСТРУМЕНТЫ
-    # ============================================================
 
     def _start_manual_points(self):
         if not self.calibrator.is_calibrated():
@@ -1018,7 +977,6 @@ class AppWindow(ctk.CTk):
         if self.graph_mode == '1d':
             old = list(self.data_points_1d)
             self.undo_manager.push({'type': '1d_points', 'data': old})
-
             self.data_points_1d.append([x_val, y_val])
             self.data_points_1d.sort(key=lambda p: p[0])
         else:
@@ -1034,7 +992,6 @@ class AppWindow(ctk.CTk):
                 'type': '2d_points',
                 'data': {'curve': self.current_curve, 'old_points': old},
             })
-
             self.data_points_2d[self.current_curve].append([x_val, y_val])
             self.data_points_2d[self.current_curve].sort(key=lambda p: p[0])
 
@@ -1118,10 +1075,7 @@ class AppWindow(ctk.CTk):
     def _handle_pencil(self, img_x, img_y):
         if not self._pencil_points:
             old_copy = self.image_loader.current.copy()
-            self.undo_manager.push({
-                'type': 'segment',
-                'data': old_copy,
-            })
+            self.undo_manager.push({'type': 'segment', 'data': old_copy})
 
         self._pencil_points.append((img_x, img_y))
         if len(self._pencil_points) >= 2:
@@ -1141,10 +1095,8 @@ class AppWindow(ctk.CTk):
             return
 
         self.image_loader.original = self.image_loader.current.copy()
-
         self._pencil_points = []
         self._pencil_old_image = None
-
         self.panel.set_status(t('status.pencil_done'))
 
     def _start_segment(self):
@@ -1159,8 +1111,7 @@ class AppWindow(ctk.CTk):
         self._segment_points.append((img_x, img_y))
 
         if len(self._segment_points) == 1:
-            self.canvas_widget.draw_point(img_x, img_y,
-                                          color='#8B5CF6', size=6, shape='circle')
+            self.canvas_widget.draw_point(img_x, img_y, color='#8B5CF6', size=6, shape='circle')
             self.panel.set_status(t('status.segment_second'))
             if hasattr(self, 'toast'):
                 self.toast.show(t('toast.segment_second'), duration=6, color='info')
@@ -1173,11 +1124,7 @@ class AppWindow(ctk.CTk):
             cv2.line(self.image_loader.current, p1, p2, (0, 0, 0), 2)
 
             self.image_loader.original = self.image_loader.current.copy()
-
-            self.undo_manager.push({
-                'type': 'segment',
-                'data': old_image,
-            })
+            self.undo_manager.push({'type': 'segment', 'data': old_image})
 
             pil = cv2_to_pil(self.image_loader.current)
             self.canvas_widget.set_image(pil)
@@ -1187,7 +1134,6 @@ class AppWindow(ctk.CTk):
             self.panel.set_status(t('status.segment_done'))
 
     def _open_smoothing_dialog(self):
-        """Открывает диалог сглаживания для активного режима."""
         if self.graph_mode == '1d':
             if len(self.data_points_1d) < 5:
                 messagebox.showwarning(t('msg.warning'), "Слишком мало точек для сглаживания (нужно минимум 5).")
@@ -1195,10 +1141,15 @@ class AppWindow(ctk.CTk):
             data = self.data_points_1d
         else:
             if not any(len(p) >= 5 for p in self.data_points_2d.values()):
-                messagebox.showwarning(t('msg.warning'),
-                                       "Слишком мало точек для сглаживания (нужно минимум 5 в кривой).")
+                messagebox.showwarning(t('msg.warning'), "Слишком мало точек для сглаживания (нужно минимум 5 в кривой).")
                 return
-            # Для 2D сглаживаем только выбранную кривую
+
+            if self.graph_mode == 'super':
+                all_curves = list(self.data_points_2d.values())
+                from ui.smoothing_dialog import SmoothingDialog
+                SmoothingDialog(self, all_curves, self._apply_smoothed_all)
+                return
+
             if self.current_curve is None or self.current_curve not in self.data_points_2d:
                 messagebox.showwarning(t('msg.warning'), "Выберите кривую в легенде или кликните по ней.")
                 return
@@ -1207,14 +1158,21 @@ class AppWindow(ctk.CTk):
         from ui.smoothing_dialog import SmoothingDialog
         SmoothingDialog(self, data, self._apply_smoothed_data)
 
+    def _apply_smoothed_all(self, smoothed_curves):
+        keys = list(self.data_points_2d.keys())
+        for i, key in enumerate(keys):
+            if i < len(smoothed_curves):
+                self.data_points_2d[key] = smoothed_curves[i]
+
+        self._draw_existing_points()
+        self._update_legend()
+        self.panel.set_status("Сглаживание применено ко всем кривым.")
+        if hasattr(self, 'toast'):
+            self.toast.show("Все кривые сглажены", duration=3, color='success')
+
     def _apply_smoothed_data(self, smoothed_points):
-        """Применяет сглаженные точки к текущему режиму."""
-        # Сохраняем в Undo
         if self.graph_mode == '1d':
-            self.undo_manager.push({
-                'type': '1d_points',
-                'data': list(self.data_points_1d),
-            })
+            self.undo_manager.push({'type': '1d_points', 'data': list(self.data_points_1d)})
             self.data_points_1d = smoothed_points
         else:
             curve = self.current_curve
@@ -1225,19 +1183,24 @@ class AppWindow(ctk.CTk):
             })
             self.data_points_2d[curve] = smoothed_points
 
-        # Перерисовываем график
         self._draw_existing_points()
         self._update_legend()
-
         self.panel.set_status(f"Сглаживание применено. Точек: {len(smoothed_points)}")
         if hasattr(self, 'toast'):
             self.toast.show("Сглаживание применено", duration=3, color='success')
 
-    # ============================================================
-    # ОТМЕНА / ОЧИСТКА / ЭКСПОРТ
-    # ============================================================
-
     def _undo(self):
+        if getattr(self, 'supermode', False) and hasattr(self, 'backup_before_super'):
+            if self.backup_before_super:
+                self.data_points_1d = list(self.backup_before_super['1d'])
+                self.data_points_2d = {k: list(v) for k, v in self.backup_before_super['2d'].items()}
+                self._draw_existing_points()
+                self._update_legend()
+                self.panel.set_status("Супермод: изменения отменены.")
+                if hasattr(self, 'toast'):
+                    self.toast.show("Отменено", duration=2, color='success')
+                return
+
         action = self.undo_manager.pop()
         if action is None:
             self.panel.set_status(t('status.nothing_to_undo'))
@@ -1258,6 +1221,12 @@ class AppWindow(ctk.CTk):
             self._draw_existing_points()
             self._update_legend()
             self.panel.set_status(t('status.cancelled') + f': {curve}')
+        elif t_type == 'super_assign':
+            self.data_points_2d = action['data']
+            self.super_curve_names = {}
+            self._draw_existing_points()
+            self._update_legend()
+            self.panel.set_status("Назначение X2 отменено")
         elif t_type == 'delete':
             self.data_points_1d = action['data']['1d']
             self.data_points_2d = action['data']['2d']
@@ -1295,25 +1264,53 @@ class AppWindow(ctk.CTk):
             self.panel.set_status(t('status.cancelled'))
 
     def _show_data(self):
-        if self.graph_mode == '1d':
-            if not self.data_points_1d:
-                messagebox.showinfo(t('msg.warning'), t('msg.no_data'))
+        # Если мы в Супермоде — определяем, что показывать
+        if self.graph_mode == 'super':
+            if self.super_found_curves:
+                if len(self.super_found_curves) == 1:
+                    # Одна кривая — показываем как 1D
+                    data = list(self.super_found_curves.values())[0]
+                    graph_mode_for_dialog = '1d'
+                else:
+                    # Несколько кривых — как 2D
+                    data = {}
+                    for cid, pts in self.super_found_curves.items():
+                        name = self.super_curve_names.get(cid, str(cid))
+                        data[name] = pts
+                    graph_mode_for_dialog = '2d'
+            else:
+                messagebox.showinfo(t('msg.warning'), t('super.need_find'))
                 return
-            data = self.data_points_1d
         else:
-            if not any(self.data_points_2d.values()):
-                messagebox.showinfo(t('msg.warning'), t('msg.no_data'))
-                return
-            data = self.data_points_2d
+            if self.graph_mode == '1d':
+                if not self.data_points_1d:
+                    messagebox.showinfo(t('msg.warning'), t('msg.no_data'))
+                    return
+                data = self.data_points_1d
+                graph_mode_for_dialog = '1d'
+            else:
+                if not any(self.data_points_2d.values()):
+                    messagebox.showinfo(t('msg.warning'), t('msg.no_data'))
+                    return
+                data = self.data_points_2d
+                graph_mode_for_dialog = '2d'
 
-        # X3 только для 2D
         x3_value = None
-        if self.graph_mode == '2d':
+        if graph_mode_for_dialog == '2d':
             need_x3 = messagebox.askyesno(t('msg.x3_title'), t('msg.x3_question'))
             if need_x3:
                 x3_value = simpledialog.askstring(t('msg.x3_title'), t('msg.x3_prompt'))
 
-        DataViewerDialog(self, data, self.graph_mode, x3_value)
+        dlg = DataViewerDialog(self, data, graph_mode_for_dialog, x3_value)
+
+        if dlg.updated_data is not None:
+            if graph_mode_for_dialog == '1d':
+                self.data_points_1d = dlg.updated_data
+            else:
+                self.data_points_2d = dlg.updated_data
+            self._draw_existing_points()
+            self._update_legend()
+            self.panel.set_status(t('dv.data_updated'))
 
     def _save_data(self):
         if self.graph_mode == '1d':
@@ -1325,7 +1322,6 @@ class AppWindow(ctk.CTk):
                 messagebox.showinfo(t('msg.warning'), t('msg.no_data'))
                 return
 
-        # X3 только для 2D
         x3_value = None
         if self.graph_mode == '2d':
             need_x3 = messagebox.askyesno(t('msg.x3_title'), t('msg.x3_question'))
@@ -1365,14 +1361,89 @@ class AppWindow(ctk.CTk):
         self._update_legend()
         self.panel.set_status(t('status.cleared'))
 
-    # ============================================================
-    # CANVAS EVENTS
-    # ============================================================
-
     def _on_canvas_click(self, cx, cy, img_x, img_y):
-        # Скрываем текущий toast, если он есть
         if hasattr(self, 'toast'):
             self.toast.hide()
+
+        if self.mode == 'mark_dashed':
+            self._dashed_points = [(img_x, img_y)]
+            return True
+
+        if getattr(self, 'supermode', False) and self.mode == 'normal':
+            if not self.calibrator.is_calibrated():
+                messagebox.showwarning("Ошибка", "Сначала откалибруйте график!")
+                return True
+
+            if not getattr(self, 'super_found_curves', None):
+                self.panel.set_status(t('super.scanning'))
+                self.update()
+
+                detector = PredictiveDetector(self.image_loader.current, self.calibrator)
+                all_curves = detector.find_all_curves(
+                    step_pixels=int(self.panel.step_entry.get() or 5),
+                    ignore_mask=getattr(self, 'dashed_mask', None)
+                )
+
+                if all_curves:
+                    filtered_curves = {}
+                    idx = 1
+                    for cid, pts in all_curves.items():
+                        if len(pts) < 30:
+                            continue
+
+                        min_x = min(p[0] for p in pts)
+                        max_x = max(p[0] for p in pts)
+                        x_range = self.calibrator.points['x_max']['value'][0] - self.calibrator.points['origin']['value'][0]
+                        if (max_x - min_x) < x_range * 0.15:
+                            continue
+
+                        filtered_curves[idx] = pts
+                        idx += 1
+
+                    self.super_found_curves = filtered_curves
+                    self.super_curve_names = {}
+                    self._update_super_curves_visual()
+                    self.panel.set_status(t('super.found_curves', n=len(filtered_curves)))
+                else:
+                    self.panel.set_status(t('super.not_found'))
+                return True
+
+            clicked_curve_id = None
+            min_dist = 20
+
+            for cid, points in self.super_found_curves.items():
+                for vx, vy in points:
+                    px, py = self.calibrator.val_to_px(vx, vy)
+                    dist = np.sqrt((px - img_x) ** 2 + (py - img_y) ** 2)
+                    if dist < min_dist:
+                        min_dist = dist
+                        clicked_curve_id = cid
+
+            if clicked_curve_id is not None:
+                # ЕСЛИ НАЙДЕНА ВСЕГО 1 КРИВАЯ — НЕ СПРАШИВАЕМ X2
+                if len(self.super_found_curves) == 1:
+                    self.data_points_1d = self.super_found_curves[clicked_curve_id]
+                    self.graph_mode = '1d'  # Временно переключаемся для отображения
+                    self._draw_existing_points()
+                    self.panel.set_status(t('super.one_curve'))
+                else:
+                    # Если 2+ кривых — спрашиваем X2
+                    dlg = X2Dialog(self)
+                    if dlg.result is not None:
+                        new_x2 = dlg.result
+                        old_data = {k: list(v) for k, v in self.data_points_2d.items()}
+                        self.undo_manager.push({
+                            'type': 'super_assign',
+                            'data': old_data
+                        })
+                        self.super_curve_names[clicked_curve_id] = new_x2
+                        self.current_curve = new_x2
+                        self._update_super_curves_visual()
+                        self.panel.set_status(t('super.x2_assigned', x2=new_x2))
+            else:
+                self.panel.set_status(t('super.click_closer'))
+
+            return True
 
         if self.mode == 'pick_origin':
             self._handle_pick_origin(img_x, img_y)
@@ -1399,6 +1470,15 @@ class AppWindow(ctk.CTk):
             self._pencil_points = []
             return True
         return False
+
+    def _update_super_curves_visual(self):
+        self.data_points_2d = {}
+        for cid, pts in self.super_found_curves.items():
+            name = self.super_curve_names.get(cid, str(cid))  # <--- УБРАЛИ проверку
+            self.data_points_2d[name] = pts
+
+        self._draw_existing_points()
+        self._update_legend()
 
     def _find_drag_point(self, img_x, img_y):
         min_dist = 15
@@ -1434,6 +1514,13 @@ class AppWindow(ctk.CTk):
                 x_val, y_val = self.calibrator.px_to_val(img_x, img_y)
                 self.data_points_2d[self._drag_curve][self._drag_index] = [x_val, y_val]
             self._draw_existing_points()
+        if self.mode == 'mark_dashed':
+            self._dashed_points.append((img_x, img_y))
+            if len(self._dashed_points) >= 2:
+                p1 = self._dashed_points[-2]
+                p2 = self._dashed_points[-1]
+                self.canvas_widget.draw_line(p1[0], p1[1], p2[0], p2[1], color='#FF0000', width=4)
+            return True
         elif self.mode == 'deleting':
             self._handle_delete(img_x, img_y)
         elif self.mode == 'pencil':
@@ -1443,6 +1530,15 @@ class AppWindow(ctk.CTk):
         if self.mode == 'dragging':
             self._drag_index = None
             self._drag_curve = None
+        if self.mode == 'mark_dashed':
+            if len(self._dashed_points) > 1:
+                self.dashed_mask = np.zeros(self.image_loader.current.shape[:2], dtype=np.uint8)
+                pts = np.array(self._dashed_points, dtype=np.int32)
+                cv2.polylines(self.dashed_mask, [pts], False, 255, thickness=12)
+                self.panel.set_status("Пунктир обведен. Кликните по графику для поиска.")
+            self.mode = 'normal'
+            self.canvas_widget.canvas.configure(cursor='crosshair')
+            return True
 
     def _on_canvas_motion(self, cx, cy, img_x, img_y):
         if not self.image_loader.is_loaded():
@@ -1468,7 +1564,6 @@ class AppWindow(ctk.CTk):
             self.panel.set_status(t('status.cancelled'))
             if hasattr(self, 'toast'):
                 self.toast.hide()
-            # Убираем из undo, потому что картинку уже выровняли, но калибровка отменена
             if self.undo_manager.stack:
                 self.undo_manager.pop()
         elif self.mode == 'calibrating':
@@ -1507,10 +1602,6 @@ class AppWindow(ctk.CTk):
     def _show_help(self):
         HelpDialog(self)
 
-    # ============================================================
-    # ФОРМУЛА / ПОЛИНОМ
-    # ============================================================
-
     def _open_poly_dialog(self):
         dlg = PolyDialog(self)
         if dlg.result is None:
@@ -1522,11 +1613,5 @@ class AppWindow(ctk.CTk):
         formula = dlg.result.get('formula', '')
         var_name = dlg.result.get('var_name')
 
-        PolyResultDialog(
-            self, points,
-            x2=x2, x3=x3,
-            formula=formula,
-            var_name=var_name,
-        )
-
+        PolyResultDialog(self, points, x2=x2, x3=x3, formula=formula, var_name=var_name)
         self.panel.set_status(t('poly.done_status', n=len(points)))

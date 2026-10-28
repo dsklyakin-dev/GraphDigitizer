@@ -14,6 +14,7 @@ STRINGS = {
     'mode.2d': '2D Graph',
     'mode.1d_short': '1D',
     'mode.2d_short': '2D',
+    'mode.super': 'Super',
 
     'poly.copy_excel': 'Copy for Excel',
     'poly.copy_tsv': 'Copy as TSV',
@@ -49,6 +50,33 @@ STRINGS = {
     'btn.smooth': 'Smooth',
     'btn.multi_curve_on': 'Multiple curves in one: ON',
     'btn.multi_curve_off': 'Multiple curves in one: OFF',
+
+    # Supermode
+    'mode.super': 'Supermode',
+    'mode.super_short': 'Supermode',
+    'super.click_graph': 'SUPERMODE: Click on the graph to find all curves.',
+    'super.found_curves': 'Found {n} curves. Click on them to set X2.',
+    'super.not_found': 'Supermode: no curves found.',
+    'super.click_closer': 'Click closer to the line.',
+    'super.one_curve': '1 curve found. X2 is not required.',
+    'super.x2_assigned': 'Curve assigned X2 = {x2}',
+    'super.scanning': 'Supermode: scanning graph...',
+    'super.need_find': 'First find curves in Supermode (click on the graph).',
+
+    # DataViewer (limits & delete)
+    'dv.limits_title': 'X limits:',
+    'dv.min': 'Min:',
+    'dv.max': 'Max:',
+    'dv.apply_limits': 'Apply',
+    'dv.delete_selected': 'Delete selected',
+    'dv.apply_and_close': 'Apply and close',
+    'dv.limits_applied': 'Limits applied.',
+    'dv.error_min': 'Invalid Min X value',
+    'dv.error_max': 'Invalid Max X value',
+    'dv.delete_info': 'First select rows (click on them).',
+    'dv.delete_title': 'Delete',
+    'dv.error_number': 'Enter a valid number!',
+    'dv.data_updated': 'Data updated manually.',
 
     # === Panel titles ===
     'panel.control': 'CONTROL',

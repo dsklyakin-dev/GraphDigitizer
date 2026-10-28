@@ -92,9 +92,9 @@ class OCRReader:
             roi = self.gray[max(0, y):min(self.h, y + radius),
                   max(0, x - radius):min(self.w, x + radius * 2)]
         elif direction == 'left':
-            # Слева от origin, чуть выше и ниже — подписи Y
-            roi = self.gray[max(0, y - 40):min(self.h, y + 30),
-                           max(0, x - 100):max(0, x - 5)]
+            # Строго слева от оси Y, на уровне самой точки (без захвата заголовков)
+            roi = self.gray[max(0, y - 20):min(self.h, y + 20),  # Узкая полоса по высоте
+                  max(0, x - 100):max(0, x - 5)]  # Только слева
         elif direction == 'bottom-left':
             # Ниже origin — подписи X
             roi = self.gray[min(self.h, y + 5):min(self.h, y + radius),
@@ -196,10 +196,13 @@ class OCRReader:
             else:
                 result['x0'] = min(x0_cleaned)
 
-        # ===== Y0 =====
+        # ===== Y0 (только слева от оси Y) =====
         y0_candidates = []
+        # Ограничиваем область: только слева от origin_x
         r, _ = self._read_near_point(origin, direction='left')
         if r:
+            # Дополнительная проверка: берём только числа, которые действительно были слева
+            # (если OCR вернул числа, они уже из левой области, так что просто фильтруем)
             y0_candidates.extend(r)
 
         y0_cleaned = self._filter_fragments(y0_candidates)
@@ -223,12 +226,9 @@ class OCRReader:
         if x1_cleaned:
             result['x1'] = max(x1_cleaned)
 
-        # ===== Y1 =====
+        # ===== Y1 (только слева) =====
         y1_candidates = []
-        r, _ = self._read_near_point(y_end, direction='left')
-        if r:
-            y1_candidates.extend(r)
-        r, _ = self._read_near_point(y_end, direction='top')
+        r, _ = self._read_near_point(y_end, direction='left')  # Только слева
         if r:
             y1_candidates.extend(r)
 

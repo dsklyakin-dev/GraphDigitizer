@@ -14,6 +14,7 @@ STRINGS = {
     'mode.2d': '2D График',
     'mode.1d_short': '1D',
     'mode.2d_short': '2D',
+    'mode.super': 'Супермод',
 
     'poly.copy_excel': 'Копировать для Excel',
     'poly.copy_tsv': 'Копировать как TSV',
@@ -65,6 +66,33 @@ STRINGS = {
     'theme.restart_question': 'Тема изменена. Перезапустить приложение сейчас?',
     'theme.dark': 'Тёмная тема',
     'theme.light': 'Светлая тема',
+
+    # Супермод
+    'mode.super': 'Супермод',
+    'mode.super_short': 'Супермод',
+    'super.click_graph': 'СУПЕРМОД: Кликните по графику, чтобы найти все кривые.',
+    'super.found_curves': 'Найдено кривых: {n}. Кликните по ним, чтобы задать X2.',
+    'super.not_found': 'Супермод: кривые не найдены.',
+    'super.click_closer': 'Кликните ближе к линии.',
+    'super.one_curve': 'Найдена 1 кривая. X2 не требуется.',
+    'super.x2_assigned': 'Кривой присвоен X2 = {x2}',
+    'super.scanning': 'Супермод: сканирование графика...',
+    'super.need_find': 'Сначала найдите кривые в Супермоде (кликните по графику).',
+
+    # Окно "Показать" (ограничения и удаление)
+    'dv.limits_title': 'Ограничения по X:',
+    'dv.min': 'Min:',
+    'dv.max': 'Max:',
+    'dv.apply_limits': 'Применить',
+    'dv.delete_selected': 'Удалить выделенные',
+    'dv.apply_and_close': 'Применить и закрыть',
+    'dv.limits_applied': 'Ограничения применены.',
+    'dv.error_min': 'Некорректное значение Min X',
+    'dv.error_max': 'Некорректное значение Max X',
+    'dv.delete_info': 'Сначала выделите строки (кликните по ним).',
+    'dv.delete_title': 'Удаление',
+    'dv.error_number': 'Введите корректное число!',
+    'dv.data_updated': 'Данные обновлены вручную.',
 
     # === Всплывающие подсказки (toast) ===
     'toast.click_curve': '👆 Кликните на точку кривой',

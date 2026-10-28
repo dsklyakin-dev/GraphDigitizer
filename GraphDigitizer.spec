@@ -7,12 +7,14 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[
-        ('tesseract', 'tesseract'),        # Папка с портативным Tesseract
+        ('tesseract', 'tesseract'),        # Папка с портативным Tesseract (exe + DLL + tessdata)
         ('locales', 'locales'),            # Файлы локализации (ru.py, en.py)
+        # Если у вас есть иконка, раскомментируйте и укажите путь:
+        # ('icon.ico', '.'),
     ],
     hiddenimports=[
-        'unicodedata',                     # Ваш фикс для Python 3.11
-        'scipy',                           # Добавлено для сглаживания (Savitzky-Golay)
+        'unicodedata',                     # Фикс для Python 3.11
+        'scipy',                           # Для сглаживания (Savitzky-Golay)
         'scipy.signal',
         'scipy.special',
         'numpy',
@@ -23,6 +25,13 @@ a = Analysis(
         'openpyxl',
         'pandas',
         'win32clipboard',
+        'matplotlib',
+        'matplotlib.backends.backend_tkagg',
+        'tkinter',
+        'tkinter.ttk',
+        'tkinter.filedialog',
+        'tkinter.messagebox',
+        'tkinter.simpledialog',
     ],
     hookspath=[],
     hooksconfig={},
@@ -52,7 +61,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,                             # Если есть иконка (например, 'icon.ico'), укажите путь здесь
+    icon=None,                             # Если есть иконка, укажите путь: 'icon.ico'
 )
 
 coll = COLLECT(
@@ -63,5 +72,5 @@ coll = COLLECT(
     strip=False,
     upx=True,
     upx_exclude=[],
-    name='GraphDigitizer',                 # Имя итоговой папки
+    name='GraphDigitizer',                 # Имя итоговой папки в dist/
 )

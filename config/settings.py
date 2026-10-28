@@ -167,7 +167,7 @@ CURVE_COLORS = [
 # МЕТАДАННЫЕ
 # ============================================================
 APP_NAME = 'Graph Digitizer'
-APP_VERSION = '7.4'
+APP_VERSION = '8.0'
 
 # Путь к файлу настроек (рядом с программой)
 _SETTINGS_FILE = os.path.join(
